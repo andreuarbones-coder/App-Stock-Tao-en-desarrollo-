@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>StockMaster Pro - Excel Edition</title>
+    <title>StockMaster Pro ✦ Refactorizado</title>
     
     <!-- React & ReactDOM -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
@@ -15,248 +15,385 @@
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- Lucide Icons -->
+    <!-- Lucide Icons (carga global) -->
     <script src="https://unpkg.com/lucide@latest"></script>
-
-    <!-- SheetJS (Librería para leer Excel .xls/.xlsx) -->
+    
+    <!-- SheetJS -->
     <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
 
     <style>
-        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
-        .fade-in { animation: fadeIn 0.3s ease-in-out; }
-        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        /* Custom Scrollbar */
+        body { font-family: 'Inter', sans-serif; background-color: #f9fafb; }
+        .fade-in { animation: fadeIn 0.2s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        .slide-in { animation: slideIn 0.2s ease-out; }
+        @keyframes slideIn { from { transform: translateX(10px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-track { background: #f1f1f1; }
         ::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
-        
-        .tab-active { border-bottom: 2px solid #2563eb; color: #2563eb; background: #eff6ff; }
-        .tab-inactive { color: #64748b; border-bottom: 2px solid transparent; }
-        .tab-inactive:hover { color: #1e293b; background: #f8fafc; }
     </style>
 </head>
 <body>
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo, useRef } = React;
+        // -------------------- Hooks Personalizados --------------------
+        const { useState, useEffect, useReducer, useContext, createContext, useRef, useMemo, useCallback } = React;
 
-        // --- Datos Iniciales ---
-        const INITIAL_DATA = [
-            { id: 1, sku: 'EJEMPLO-01', name: 'Producto Demo', family: 'General', distributor: 'Propio', cost: 100, price: 150, stock: { 'Casa Central': 50 } },
-        ];
+        // Hook para localStorage con soporte para valores iniciales
+        function useLocalStorage(key, initialValue) {
+            const [storedValue, setStoredValue] = useState(() => {
+                try {
+                    const item = localStorage.getItem(key);
+                    return item ? JSON.parse(item) : initialValue;
+                } catch {
+                    return initialValue;
+                }
+            });
 
-        const INITIAL_BRANCHES = ['Casa Central'];
-        const ITEMS_PER_PAGE = 50; // Límite para mantener la UI rápida
-
-        // --- Iconos ---
-        const Icon = ({ name, size = 18, className = "" }) => {
             useEffect(() => {
-                if (window.lucide) window.lucide.createIcons();
-            }, [name]);
-            return <i data-lucide={name} className={className} style={{ width: size, height: size }}></i>;
+                localStorage.setItem(key, JSON.stringify(storedValue));
+            }, [key, storedValue]);
+
+            return [storedValue, setStoredValue];
+        }
+
+        // -------------------- Contexto Global --------------------
+        const AppContext = createContext();
+
+        const initialState = {
+            inventory: [],
+            branches: ['Casa Central'],
+            history: []
         };
 
-        // --- Toast ---
+        function appReducer(state, action) {
+            switch (action.type) {
+                case 'SET_INVENTORY':
+                    return { ...state, inventory: action.payload };
+                case 'ADD_PRODUCTS': {
+                    const { products, branch } = action.payload;
+                    const newInventory = [...state.inventory];
+                    let added = 0, updated = 0;
+                    products.forEach(prod => {
+                        const index = newInventory.findIndex(p => p.sku === prod.sku);
+                        if (index >= 0) {
+                            // Actualizar existente
+                            newInventory[index] = { ...newInventory[index], ...prod };
+                            // Asegurar que la sucursal actual tenga stock
+                            if (branch && prod.stock && prod.stock[branch] !== undefined) {
+                                newInventory[index].stock[branch] = prod.stock[branch];
+                            }
+                            updated++;
+                        } else {
+                            // Nuevo producto
+                            newInventory.push({
+                                id: crypto.randomUUID ? crypto.randomUUID() : Date.now() + Math.random(),
+                                ...prod,
+                                stock: branch ? { [branch]: prod.stock?.[branch] || 0 } : prod.stock || {}
+                            });
+                            added++;
+                        }
+                    });
+                    return { ...state, inventory: newInventory };
+                }
+                case 'UPDATE_PRODUCT': {
+                    const updated = state.inventory.map(p => 
+                        p.id === action.payload.id ? action.payload : p
+                    );
+                    return { ...state, inventory: updated };
+                }
+                case 'UPDATE_STOCK': {
+                    const { productId, branch, quantity } = action.payload;
+                    const updated = state.inventory.map(p => 
+                        p.id === productId 
+                            ? { ...p, stock: { ...p.stock, [branch]: quantity } }
+                            : p
+                    );
+                    return { ...state, inventory: updated };
+                }
+                case 'ADD_BRANCH':
+                    if (state.branches.includes(action.payload)) return state;
+                    return { ...state, branches: [...state.branches, action.payload] };
+                case 'DELETE_BRANCH': {
+                    const branch = action.payload;
+                    const newBranches = state.branches.filter(b => b !== branch);
+                    const newInventory = state.inventory.map(p => {
+                        const newStock = { ...p.stock };
+                        delete newStock[branch];
+                        return { ...p, stock: newStock };
+                    });
+                    return { ...state, branches: newBranches, inventory: newInventory };
+                }
+                case 'ADD_HISTORY':
+                    return { ...state, history: [action.payload, ...state.history] };
+                default:
+                    return state;
+            }
+        }
+
+        // -------------------- Componente Icono Optimizado --------------------
+        const Icon = ({ name, size = 18, className = "" }) => {
+            const iconRef = useRef();
+            useEffect(() => {
+                if (iconRef.current && window.lucide) {
+                    iconRef.current.innerHTML = `<i data-lucide="${name}" style="width:${size}px;height:${size}px"></i>`;
+                    window.lucide.createIcons({}, iconRef.current);
+                }
+            }, [name, size]);
+            return <span ref={iconRef} className={className} style={{ display: 'inline-flex' }} />;
+        };
+
+        // -------------------- Toast --------------------
         const Toast = ({ message, type, onClose }) => {
-            useEffect(() => { const timer = setTimeout(onClose, 3000); return () => clearTimeout(timer); }, []);
-            const colors = type === 'success' ? 'bg-green-600' : 'bg-red-500';
+            useEffect(() => { const t = setTimeout(onClose, 3000); return () => clearTimeout(t); }, []);
+            const colors = type === 'success' ? 'bg-emerald-600' : 'bg-rose-500';
             return (
-                <div className={`fixed bottom-4 right-4 ${colors} text-white px-6 py-3 rounded-lg shadow-lg fade-in z-50 flex items-center gap-2`}>
-                    <Icon name={type === 'success' ? 'check-circle' : 'alert-circle'} />
-                    {message}
+                <div className={`fixed bottom-5 right-5 ${colors} text-white px-5 py-3 rounded-xl shadow-2xl fade-in z-50 flex items-center gap-3`}>
+                    <Icon name={type === 'success' ? 'check-circle' : 'alert-circle'} size={20} />
+                    <span className="font-medium">{message}</span>
                 </div>
             );
         };
 
-        // --- Modal Nuevo Branch ---
-        const NewBranchModal = ({ isOpen, onClose, onConfirm }) => {
+        // -------------------- Modal para nueva sucursal --------------------
+        const BranchModal = ({ isOpen, onClose, onConfirm }) => {
             const [name, setName] = useState('');
             if (!isOpen) return null;
             return (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 fade-in">
-                    <div className="bg-white rounded-xl p-6 w-96 shadow-2xl">
-                        <h3 className="text-lg font-bold mb-4">Nueva Sucursal</h3>
-                        <input 
-                            autoFocus
-                            type="text" 
-                            placeholder="Nombre (ej: Sucursal Norte)" 
-                            className="w-full border rounded-lg p-2 mb-4 outline-none focus:ring-2 focus:ring-blue-500"
-                            value={name}
-                            onChange={(e) => setName(e.target.value)}
-                        />
-                        <div className="flex justify-end gap-2">
-                            <button onClick={onClose} className="px-4 py-2 text-gray-500 hover:bg-gray-100 rounded-lg">Cancelar</button>
-                            <button onClick={() => { if(name) onConfirm(name); setName(''); }} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Crear</button>
+                <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 fade-in">
+                    <div className="bg-white rounded-2xl p-6 w-96 shadow-2xl">
+                        <h3 className="text-xl font-bold mb-5">Nueva Sucursal</h3>
+                        <input autoFocus type="text" placeholder="Ej: Sucursal Norte" className="w-full border border-gray-200 rounded-xl p-3 mb-5 focus:ring-2 focus:ring-blue-500 outline-none" value={name} onChange={e => setName(e.target.value)} />
+                        <div className="flex justify-end gap-3">
+                            <button onClick={onClose} className="px-5 py-2.5 text-gray-600 hover:bg-gray-100 rounded-xl font-medium">Cancelar</button>
+                            <button onClick={() => { if(name.trim()) onConfirm(name.trim()); setName(''); }} className="px-5 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-medium">Crear</button>
                         </div>
                     </div>
                 </div>
             );
         };
 
-        // --- App Principal ---
-        const App = () => {
-            // Estados
-            const [activeView, setActiveView] = useState('inventory');
-            const [currentBranch, setCurrentBranch] = useState('Casa Central');
-            const [showBranchModal, setShowBranchModal] = useState(false);
-            const [showAllProducts, setShowAllProducts] = useState(false);
-            const [isLoading, setIsLoading] = useState(false);
+        // -------------------- Modal para producto (crear/editar) --------------------
+        const ProductModal = ({ isOpen, onClose, product, branches, onSave }) => {
+            const [form, setForm] = useState({ sku: '', name: '', family: '', distributor: '', cost: 0, price: 0, stock: {} });
+            useEffect(() => {
+                if (product) {
+                    setForm(product);
+                } else {
+                    setForm({ sku: '', name: '', family: '', distributor: '', cost: 0, price: 0, stock: {} });
+                }
+            }, [product, isOpen]);
 
-            // Paginación
-            const [currentPage, setCurrentPage] = useState(1);
+            const handleChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
+            const handleStockChange = (branch, value) => setForm({ ...form, stock: { ...form.stock, [branch]: parseInt(value) || 0 } });
 
-            // Datos Persistentes
-            const [branches, setBranches] = useState(() => JSON.parse(localStorage.getItem('sm_branches')) || INITIAL_BRANCHES);
-            const [inventory, setInventory] = useState(() => JSON.parse(localStorage.getItem('sm_data')) || INITIAL_DATA);
-            const [history, setHistory] = useState(() => JSON.parse(localStorage.getItem('sm_history')) || []);
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                onSave({ ...form, id: product?.id || crypto.randomUUID?.() || Date.now() });
+            };
 
-            // Filtros UI
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 fade-in">
+                    <div className="bg-white rounded-2xl p-6 w-[500px] max-h-[90vh] overflow-y-auto shadow-2xl">
+                        <h3 className="text-xl font-bold mb-5">{product ? 'Editar' : 'Nuevo'} Producto</h3>
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="text-xs font-semibold text-gray-500 uppercase">SKU *</label>
+                                    <input name="sku" required value={form.sku} onChange={handleChange} className="w-full border rounded-lg p-2 mt-1" />
+                                </div>
+                                <div>
+                                    <label className="text-xs font-semibold text-gray-500 uppercase">Nombre *</label>
+                                    <input name="name" required value={form.name} onChange={handleChange} className="w-full border rounded-lg p-2 mt-1" />
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="text-xs font-semibold text-gray-500 uppercase">Familia</label>
+                                    <input name="family" value={form.family} onChange={handleChange} className="w-full border rounded-lg p-2 mt-1" />
+                                </div>
+                                <div>
+                                    <label className="text-xs font-semibold text-gray-500 uppercase">Distribuidor</label>
+                                    <input name="distributor" value={form.distributor} onChange={handleChange} className="w-full border rounded-lg p-2 mt-1" />
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="text-xs font-semibold text-gray-500 uppercase">Costo ($)</label>
+                                    <input name="cost" type="number" step="0.01" value={form.cost} onChange={handleChange} className="w-full border rounded-lg p-2 mt-1" />
+                                </div>
+                                <div>
+                                    <label className="text-xs font-semibold text-gray-500 uppercase">Precio ($)</label>
+                                    <input name="price" type="number" step="0.01" value={form.price} onChange={handleChange} className="w-full border rounded-lg p-2 mt-1" />
+                                </div>
+                            </div>
+                            <div>
+                                <label className="text-xs font-semibold text-gray-500 uppercase mb-2 block">Stock por sucursal</label>
+                                <div className="space-y-2 max-h-40 overflow-y-auto border rounded-lg p-3">
+                                    {branches.map(b => (
+                                        <div key={b} className="flex items-center gap-2">
+                                            <span className="w-28 text-sm truncate">{b}:</span>
+                                            <input type="number" min="0" value={form.stock[b] || 0} onChange={(e) => handleStockChange(b, e.target.value)} className="w-24 border rounded px-2 py-1" />
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                            <div className="flex justify-end gap-3 pt-4">
+                                <button type="button" onClick={onClose} className="px-5 py-2.5 text-gray-600 hover:bg-gray-100 rounded-xl">Cancelar</button>
+                                <button type="submit" className="px-5 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700">Guardar</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            );
+        };
+
+        // -------------------- Sidebar --------------------
+        const Sidebar = ({ activeView, setActiveView, currentBranch }) => (
+            <div className="w-64 bg-slate-900 text-white flex flex-col shrink-0">
+                <div className="p-6 flex items-center gap-3">
+                    <div className="bg-blue-600 p-2 rounded-xl"><Icon name="package" size={22} /></div>
+                    <span className="font-bold text-xl tracking-tight">StockMaster</span>
+                </div>
+                <div className="px-4 py-2">
+                    <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3 px-2">Menú</div>
+                    <button onClick={() => setActiveView('inventory')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl mb-1 transition ${activeView === 'inventory' ? 'bg-blue-600' : 'hover:bg-slate-800'}`}>
+                        <Icon name="layout-grid" size={20} /> Inventario
+                    </button>
+                    <button onClick={() => setActiveView('transfer')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl mb-1 transition ${activeView === 'transfer' ? 'bg-blue-600' : 'hover:bg-slate-800'}`}>
+                        <Icon name="arrow-right-left" size={20} /> Transferencias
+                    </button>
+                    <button onClick={() => setActiveView('history')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl mb-1 transition ${activeView === 'history' ? 'bg-blue-600' : 'hover:bg-slate-800'}`}>
+                        <Icon name="history" size={20} /> Historial
+                    </button>
+                </div>
+                <div className="mt-auto p-4 border-t border-slate-800">
+                    <div className="bg-slate-800 rounded-xl p-3">
+                        <div className="text-xs text-slate-400 mb-1">Sucursal Activa</div>
+                        <div className="font-bold truncate flex items-center gap-2"><Icon name="store" size={16} />{currentBranch}</div>
+                    </div>
+                </div>
+            </div>
+        );
+
+        // -------------------- Tabs de sucursales --------------------
+        const BranchTabs = ({ branches, currentBranch, setCurrentBranch, onAdd, onDelete }) => (
+            <div className="flex items-center gap-1 overflow-x-auto pb-0 hide-scrollbar">
+                {branches.map(b => (
+                    <div key={b} className={`group flex items-center px-4 py-2 rounded-t-lg font-medium text-sm transition-all whitespace-nowrap ${currentBranch === b ? 'bg-white text-blue-600 border-t border-l border-r border-gray-200' : 'text-gray-600 hover:bg-gray-100'}`}>
+                        <button onClick={() => setCurrentBranch(b)} className="flex items-center gap-2">
+                            <Icon name="store" size={14} /> {b}
+                        </button>
+                        {branches.length > 1 && (
+                            <button onClick={() => onDelete(b)} className="ml-2 p-0.5 rounded-full hover:bg-red-100 text-gray-400 hover:text-red-600">
+                                <Icon name="x" size={14} />
+                            </button>
+                        )}
+                    </div>
+                ))}
+                <button onClick={onAdd} className="px-3 py-2 text-gray-400 hover:text-blue-600 hover:bg-gray-100 rounded-t-lg">
+                    <Icon name="plus" size={18} />
+                </button>
+            </div>
+        );
+
+        // -------------------- Tabla de inventario --------------------
+        const InventoryTable = ({ items, currentBranch, onStockChange, onEdit, onDelete, sortConfig, requestSort }) => {
+            const getSortIcon = (key) => {
+                if (sortConfig.key !== key) return 'chevrons-up-down';
+                return sortConfig.direction === 'asc' ? 'chevron-up' : 'chevron-down';
+            };
+
+            return (
+                <div className="overflow-x-auto">
+                    <table className="w-full text-left">
+                        <thead className="bg-gray-50 border-y border-gray-200 text-xs font-bold text-gray-500 uppercase tracking-wider sticky top-0">
+                            <tr>
+                                <th className="px-6 py-4 cursor-pointer hover:text-gray-700" onClick={() => requestSort('name')}>
+                                    <div className="flex items-center gap-1">Producto <Icon name={getSortIcon('name')} size={14} /></div>
+                                </th>
+                                <th className="px-6 py-4 cursor-pointer hover:text-gray-700" onClick={() => requestSort('family')}>
+                                    <div className="flex items-center gap-1">Detalles <Icon name={getSortIcon('family')} size={14} /></div>
+                                </th>
+                                <th className="px-6 py-4 text-center bg-blue-50/50 text-blue-800">Stock en {currentBranch}</th>
+                                <th className="px-6 py-4 text-right cursor-pointer hover:text-gray-700" onClick={() => requestSort('price')}>
+                                    <div className="flex items-center justify-end gap-1">Económico <Icon name={getSortIcon('price')} size={14} /></div>
+                                </th>
+                                <th className="px-6 py-4 text-center">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                            {items.map(item => (
+                                <tr key={item.id} className="hover:bg-gray-50 transition-colors">
+                                    <td className="px-6 py-3">
+                                        <div className="font-bold text-gray-900">{item.name}</div>
+                                        <div className="text-xs text-gray-500 font-mono bg-gray-100 inline-block px-1 rounded mt-1">{item.sku}</div>
+                                    </td>
+                                    <td className="px-6 py-3 text-sm text-gray-600">
+                                        <div><span className="text-gray-400">Fam:</span> {item.family || '—'}</div>
+                                        <div><span className="text-gray-400">Dist:</span> {item.distributor || '—'}</div>
+                                    </td>
+                                    <td className="px-6 py-3 text-center bg-blue-50/20">
+                                        <input type="number" min="0" className="w-20 text-center border border-gray-200 rounded-lg py-1 focus:ring-2 focus:ring-blue-500 outline-none font-bold text-gray-800" value={item.stock[currentBranch] || 0} onChange={(e) => onStockChange(item.id, parseInt(e.target.value) || 0)} />
+                                    </td>
+                                    <td className="px-6 py-3 text-right text-sm">
+                                        <div className="text-gray-900 font-medium">${item.price}</div>
+                                        <div className="text-xs text-gray-400">Costo: ${item.cost}</div>
+                                    </td>
+                                    <td className="px-6 py-3 text-center">
+                                        <div className="flex items-center justify-center gap-2">
+                                            <button onClick={() => onEdit(item)} className="p-1 hover:bg-gray-200 rounded"><Icon name="pencil" size={16} /></button>
+                                            <button onClick={() => onDelete(item.id)} className="p-1 hover:bg-red-100 text-red-500 rounded"><Icon name="trash-2" size={16} /></button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            ))}
+                            {items.length === 0 && (
+                                <tr><td colSpan="5" className="text-center py-12 text-gray-400">No hay productos en esta vista</td></tr>
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+            );
+        };
+
+        // -------------------- Vista Inventario --------------------
+        const InventoryView = () => {
+            const { state, dispatch } = useContext(AppContext);
+            const { inventory, branches, currentBranch } = state;
             const [searchTerm, setSearchTerm] = useState('');
-            const [notification, setNotification] = useState(null);
-            
-            // Cola Transferencias
-            const [transferQueue, setTransferQueue] = useState([]);
-            const [transferForm, setTransferForm] = useState({ productId: '', toBranch: '', quantity: 1 });
+            const [showAllProducts, setShowAllProducts] = useState(false);
+            const [currentPage, setCurrentPage] = useState(1);
+            const [sortConfig, setSortConfig] = useState({ key: 'name', direction: 'asc' });
+            const [productModalOpen, setProductModalOpen] = useState(false);
+            const [editingProduct, setEditingProduct] = useState(null);
+            const fileInputRef = useRef();
+            const [isLoading, setIsLoading] = useState(false);
+            const ITEMS_PER_PAGE = 50;
 
-            const fileInputRef = useRef(null);
-
-            // Persistencia
-            useEffect(() => { localStorage.setItem('sm_data', JSON.stringify(inventory)); }, [inventory]);
-            useEffect(() => { localStorage.setItem('sm_branches', JSON.stringify(branches)); }, [branches]);
-            useEffect(() => { localStorage.setItem('sm_history', JSON.stringify(history)); }, [history]);
-
-            // Reset página al filtrar
-            useEffect(() => { setCurrentPage(1); }, [searchTerm, currentBranch, showAllProducts]);
-
-            const showToast = (msg, type = 'success') => setNotification({ message: msg, type });
-
-            // --- Lógica de Sucursales ---
-            const handleAddBranch = (name) => {
-                if (branches.includes(name)) return showToast("Esa sucursal ya existe", "error");
-                setBranches([...branches, name]);
-                setCurrentBranch(name);
-                setShowBranchModal(false);
-                showToast(`Sucursal "${name}" creada`);
-            };
-
-            const handleDeleteBranch = (name) => {
-                if (branches.length <= 1) return showToast("Debe existir al menos una sucursal", "error");
-                if (!confirm(`¿Estás seguro de eliminar "${name}" y todo su stock? Esta acción no se puede deshacer.`)) return;
-                
-                const newBranches = branches.filter(b => b !== name);
-                setBranches(newBranches);
-                if (currentBranch === name) setCurrentBranch(newBranches[0]);
-
-                setInventory(prev => prev.map(item => {
-                    const newStock = { ...item.stock };
-                    delete newStock[name];
-                    return { ...item, stock: newStock };
-                }));
-                showToast(`Sucursal "${name}" eliminada`);
-            };
-
-            // --- Lógica Importación Excel (.xls, .xlsx, .csv) ---
-            const handleFileUpload = (e) => {
-                const file = e.target.files[0];
-                if (!file) return;
-
-                setIsLoading(true);
-
-                const reader = new FileReader();
-                reader.onload = (event) => {
-                    try {
-                        const data = new Uint8Array(event.target.result);
-                        const workbook = XLSX.read(data, { type: 'array' });
-                        
-                        // Tomamos la primera hoja
-                        const firstSheetName = workbook.SheetNames[0];
-                        const worksheet = workbook.Sheets[firstSheetName];
-                        
-                        // Convertimos a JSON Array
-                        const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" }); // defval asegura que no haya undefined
-
-                        if (jsonData.length === 0) throw new Error("La hoja está vacía");
-
-                        // Analizamos las claves del primer objeto para mapear columnas
-                        const firstRow = jsonData[0];
-                        const headers = Object.keys(firstRow);
-                        
-                        // Buscamos columnas clave dinámicamente
-                        let keyMap = { sku: null, name: null, family: null, distributor: null, cost: null, price: null, stock: null };
-
-                        headers.forEach(h => {
-                            const lowerH = h.toLowerCase();
-                            if (lowerH.includes('sku') || lowerH.includes('codigo') || lowerH.includes('código')) keyMap.sku = h;
-                            else if (lowerH.includes('nom') || lowerH.includes('desc') || lowerH.includes('prod')) keyMap.name = h;
-                            else if (lowerH.includes('fam') || lowerH.includes('cat')) keyMap.family = h;
-                            else if (lowerH.includes('dist') || lowerH.includes('prov')) keyMap.distributor = h;
-                            else if (lowerH.includes('cost')) keyMap.cost = h;
-                            else if (lowerH.includes('prec') || lowerH.includes('vent') || lowerH.includes('pvp')) keyMap.price = h;
-                            else if (lowerH.includes('cant') || lowerH.includes('stock') || lowerH.includes('exist')) keyMap.stock = h;
-                        });
-
-                        if (!keyMap.sku) throw new Error("No se encontró una columna para SKU/Código");
-
-                        let newCount = 0;
-                        let updatedCount = 0;
-                        let nextInventory = [...inventory];
-
-                        // Procesamos los datos (Batch processing)
-                        jsonData.forEach((row, idx) => {
-                            const sku = String(row[keyMap.sku]).trim();
-                            if (!sku) return;
-
-                            const qty = keyMap.stock ? (parseInt(row[keyMap.stock]) || 0) : 0;
-                            const existingIdx = nextInventory.findIndex(p => p.sku === sku);
-
-                            if (existingIdx > -1) {
-                                updatedCount++;
-                                const prod = nextInventory[existingIdx];
-                                if (keyMap.name) prod.name = row[keyMap.name];
-                                if (keyMap.price) prod.price = parseFloat(row[keyMap.price]) || prod.price;
-                                if (keyMap.cost) prod.cost = parseFloat(row[keyMap.cost]) || prod.cost;
-                                if (keyMap.family) prod.family = row[keyMap.family] || prod.family;
-                                if (keyMap.distributor) prod.distributor = row[keyMap.distributor] || prod.distributor;
-                                prod.stock = { ...prod.stock, [currentBranch]: qty }; // Sobreescribe stock de ESTA sucursal
-                                nextInventory[existingIdx] = prod;
-                            } else {
-                                newCount++;
-                                nextInventory.push({
-                                    id: Date.now() + idx + Math.random(),
-                                    sku: sku,
-                                    name: keyMap.name ? row[keyMap.name] : 'Sin Nombre',
-                                    family: keyMap.family ? row[keyMap.family] : 'General',
-                                    distributor: keyMap.distributor ? row[keyMap.distributor] : 'General',
-                                    cost: keyMap.cost ? parseFloat(row[keyMap.cost]) : 0,
-                                    price: keyMap.price ? parseFloat(row[keyMap.price]) : 0,
-                                    stock: { [currentBranch]: qty }
-                                });
-                            }
-                        });
-
-                        setInventory(nextInventory);
-                        showToast(`Éxito: ${newCount} nuevos, ${updatedCount} actualizados.`);
-                    } catch (err) {
-                        console.error(err);
-                        showToast("Error al procesar Excel: " + err.message, "error");
-                    } finally {
-                        setIsLoading(false);
-                        if (fileInputRef.current) fileInputRef.current.value = "";
-                    }
-                };
-                reader.readAsArrayBuffer(file);
-            };
-
-            // --- Filtrado y Paginación ---
             const filteredItems = useMemo(() => {
-                return inventory.filter(item => {
-                    const matchesSearch = (item.name + item.sku).toLowerCase().includes(searchTerm.toLowerCase());
-                    const matchesBranch = showAllProducts ? true : (item.stock[currentBranch] !== undefined);
-                    return matchesSearch && matchesBranch;
-                });
-            }, [inventory, searchTerm, currentBranch, showAllProducts]);
+                return inventory
+                    .filter(item => {
+                        const matchesSearch = (item.name + item.sku).toLowerCase().includes(searchTerm.toLowerCase());
+                        const matchesBranch = showAllProducts ? true : (item.stock[currentBranch] !== undefined);
+                        return matchesSearch && matchesBranch;
+                    })
+                    .sort((a, b) => {
+                        let aVal = a[sortConfig.key], bVal = b[sortConfig.key];
+                        if (sortConfig.key === 'price' || sortConfig.key === 'cost') {
+                            aVal = Number(aVal) || 0;
+                            bVal = Number(bVal) || 0;
+                        } else {
+                            aVal = String(aVal || '').toLowerCase();
+                            bVal = String(bVal || '').toLowerCase();
+                        }
+                        if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
+                        if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
+                        return 0;
+                    });
+            }, [inventory, searchTerm, currentBranch, showAllProducts, sortConfig]);
 
             const paginatedItems = useMemo(() => {
                 const start = (currentPage - 1) * ITEMS_PER_PAGE;
@@ -265,410 +402,378 @@
 
             const totalPages = Math.ceil(filteredItems.length / ITEMS_PER_PAGE);
 
-            // --- Transferencias ---
-            const addToTransferQueue = (e) => {
-                e.preventDefault();
-                const { productId, toBranch, quantity } = transferForm;
-                if (currentBranch === toBranch) return showToast("Origen y Destino iguales", "error");
-                
-                const product = inventory.find(p => p.id === parseInt(productId));
-                const available = product.stock[currentBranch] || 0;
-                
-                const pending = transferQueue
-                    .filter(t => t.productId === productId && t.fromBranch === currentBranch)
-                    .reduce((acc, t) => acc + parseInt(t.quantity), 0);
-                
-                if (available < (pending + parseInt(quantity))) return showToast("Stock insuficiente", "error");
+            useEffect(() => { setCurrentPage(1); }, [searchTerm, currentBranch, showAllProducts]);
 
-                setTransferQueue([...transferQueue, {
-                    id: Date.now(),
-                    productId,
-                    productName: product.name,
-                    sku: product.sku,
-                    fromBranch: currentBranch,
-                    toBranch,
-                    quantity: parseInt(quantity)
-                }]);
-                setTransferForm({ ...transferForm, quantity: 1 });
+            const requestSort = (key) => {
+                setSortConfig(prev => ({
+                    key,
+                    direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc'
+                }));
             };
 
-            const executeTransfers = () => {
-                const nextInventory = [...inventory];
-                const nextHistory = [...history];
+            const handleStockChange = (productId, quantity) => {
+                dispatch({ type: 'UPDATE_STOCK', payload: { productId, branch: currentBranch, quantity } });
+            };
 
-                transferQueue.forEach(t => {
-                    const idx = nextInventory.findIndex(p => p.id == t.productId);
-                    if (idx > -1) {
-                        const prod = nextInventory[idx];
-                        const currentOrigin = prod.stock[t.fromBranch] || 0;
-                        const currentDest = prod.stock[t.toBranch] || 0;
-                        
-                        prod.stock = {
-                            ...prod.stock,
-                            [t.fromBranch]: currentOrigin - t.quantity,
-                            [t.toBranch]: currentDest + t.quantity
-                        };
-                        
-                        nextHistory.unshift({
-                            id: Math.random(),
-                            date: new Date().toLocaleString(),
-                            detail: `Transferido ${t.quantity} de ${prod.sku} desde ${t.fromBranch} a ${t.toBranch}`
+            const handleFileUpload = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                setIsLoading(true);
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    try {
+                        const data = new Uint8Array(event.target.result);
+                        const workbook = XLSX.read(data, { type: 'array' });
+                        const sheetName = workbook.SheetNames[0];
+                        const worksheet = workbook.Sheets[sheetName];
+                        const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+                        if (jsonData.length === 0) throw new Error("El archivo está vacío");
+
+                        // Mapeo inteligente de columnas
+                        const headers = Object.keys(jsonData[0]);
+                        const map = { sku: null, name: null, family: null, distributor: null, cost: null, price: null, stock: null };
+                        headers.forEach(h => {
+                            const lh = h.toLowerCase();
+                            if (lh.includes('sku') || lh.includes('codigo')) map.sku = h;
+                            else if (lh.includes('nombre') || lh.includes('desc')) map.name = h;
+                            else if (lh.includes('familia') || lh.includes('categoria')) map.family = h;
+                            else if (lh.includes('distribuidor') || lh.includes('proveedor')) map.distributor = h;
+                            else if (lh.includes('costo')) map.cost = h;
+                            else if (lh.includes('precio') || lh.includes('venta')) map.price = h;
+                            else if (lh.includes('cantidad') || lh.includes('stock')) map.stock = h;
                         });
-                    }
-                });
+                        if (!map.sku) throw new Error("No se encontró columna SKU/Código");
 
-                setInventory(nextInventory);
-                setHistory(nextHistory);
-                setTransferQueue([]);
-                showToast("Transferencias ejecutadas");
+                        const products = jsonData.map(row => ({
+                            sku: String(row[map.sku] || '').trim(),
+                            name: map.name ? String(row[map.name] || '') : 'Sin nombre',
+                            family: map.family ? String(row[map.family] || '') : 'General',
+                            distributor: map.distributor ? String(row[map.distributor] || '') : 'General',
+                            cost: map.cost ? parseFloat(row[map.cost]) || 0 : 0,
+                            price: map.price ? parseFloat(row[map.price]) || 0 : 0,
+                            stock: { [currentBranch]: map.stock ? parseInt(row[map.stock]) || 0 : 0 }
+                        })).filter(p => p.sku);
+
+                        dispatch({ type: 'ADD_PRODUCTS', payload: { products, branch: currentBranch } });
+                        window.showToast?.(`Importados ${products.length} productos`, 'success');
+                    } catch (err) {
+                        window.showToast?.(`Error: ${err.message}`, 'error');
+                    } finally {
+                        setIsLoading(false);
+                        if (fileInputRef.current) fileInputRef.current.value = '';
+                    }
+                };
+                reader.readAsArrayBuffer(file);
+            };
+
+            const handleExport = () => {
+                const ws = XLSX.utils.json_to_sheet(filteredItems.map(i => ({
+                    SKU: i.sku,
+                    Nombre: i.name,
+                    Familia: i.family,
+                    Distribuidor: i.distributor,
+                    [`Stock_${currentBranch}`]: i.stock[currentBranch] || 0,
+                    Costo: i.cost,
+                    Precio: i.price
+                })));
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Inventario");
+                XLSX.writeFile(wb, `Inventario_${currentBranch}.xlsx`);
+            };
+
+            const handleSaveProduct = (product) => {
+                dispatch({ type: 'UPDATE_PRODUCT', payload: product });
+                setProductModalOpen(false);
+                setEditingProduct(null);
+                window.showToast?.(`Producto ${product.name} guardado`, 'success');
+            };
+
+            const handleDeleteProduct = (id) => {
+                if (confirm('¿Eliminar este producto? Esta acción no se puede deshacer.')) {
+                    dispatch({ type: 'SET_INVENTORY', payload: inventory.filter(p => p.id !== id) });
+                    window.showToast?.('Producto eliminado', 'success');
+                }
             };
 
             return (
-                <div className="flex h-screen overflow-hidden">
-                    {/* Sidebar */}
-                    <div className="w-64 bg-slate-900 text-white flex flex-col shrink-0">
-                        <div className="p-6 flex items-center gap-3">
-                            <div className="bg-blue-600 p-2 rounded-lg"><Icon name="package" /></div>
-                            <span className="font-bold text-xl tracking-tight">StockMaster</span>
-                        </div>
-                        
-                        <div className="px-4 py-2">
-                            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Menú Principal</div>
-                            <button onClick={() => setActiveView('inventory')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg mb-1 transition ${activeView === 'inventory' ? 'bg-blue-600' : 'hover:bg-slate-800'}`}>
-                                <Icon name="layout-grid" size={20} /> Inventario
-                            </button>
-                            <button onClick={() => setActiveView('transfer')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg mb-1 transition ${activeView === 'transfer' ? 'bg-blue-600' : 'hover:bg-slate-800'}`}>
-                                <Icon name="arrow-right-left" size={20} /> Transferencias
-                            </button>
-                            <button onClick={() => setActiveView('history')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg mb-1 transition ${activeView === 'history' ? 'bg-blue-600' : 'hover:bg-slate-800'}`}>
-                                <Icon name="history" size={20} /> Historial
-                            </button>
-                        </div>
-
-                        <div className="mt-auto p-4 border-t border-slate-800">
-                            <div className="bg-slate-800 rounded-lg p-3">
-                                <div className="text-xs text-slate-400 mb-1">Sucursal Activa</div>
-                                <div className="font-bold truncate">{currentBranch}</div>
+                <div className="fade-in space-y-6">
+                    <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex flex-wrap justify-between items-center gap-4">
+                        <div className="flex items-center gap-4 flex-1">
+                            <div className="relative flex-1 max-w-md">
+                                <Icon name="search" className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                                <input type="text" placeholder="Buscar SKU, Nombre..." className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
                             </div>
+                            <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer select-none">
+                                <input type="checkbox" checked={showAllProducts} onChange={e => setShowAllProducts(e.target.checked)} className="rounded text-blue-600" />
+                                Ver catálogo global
+                            </label>
+                        </div>
+                        <div className="flex gap-3">
+                            <button onClick={() => { setEditingProduct(null); setProductModalOpen(true); }} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium flex items-center gap-2">
+                                <Icon name="plus" size={18} /> Nuevo
+                            </button>
+                            <button onClick={handleExport} className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg font-medium flex items-center gap-2">
+                                <Icon name="download" size={18} /> Exportar
+                            </button>
+                            <label className={`px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium flex items-center gap-2 transition cursor-pointer ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                                <Icon name={isLoading ? 'loader-2' : 'upload'} size={18} className={isLoading ? 'animate-spin' : ''} />
+                                {isLoading ? 'Procesando...' : `Cargar Excel`}
+                                <input type="file" ref={fileInputRef} disabled={isLoading} className="hidden" accept=".xlsx,.xls,.csv" onChange={handleFileUpload} />
+                            </label>
                         </div>
                     </div>
 
-                    {/* Main Content */}
-                    <div className="flex-1 flex flex-col bg-gray-50 overflow-hidden">
-                        
-                        {/* Header & Tabs */}
-                        <div className="bg-white border-b border-gray-200 px-8 pt-6">
-                            <div className="flex justify-between items-end">
-                                <div>
-                                    <h1 className="text-2xl font-bold text-gray-800 mb-1">
-                                        {activeView === 'inventory' && 'Gestión de Inventario'}
-                                        {activeView === 'transfer' && 'Centro de Transferencias'}
-                                        {activeView === 'history' && 'Auditoría de Movimientos'}
-                                    </h1>
-                                    <p className="text-sm text-gray-500 mb-6">
-                                        Total Productos: {inventory.length} | Mostrando: {filteredItems.length}
-                                    </p>
-                                </div>
-                                
-                                <div className="flex items-center gap-1 overflow-x-auto pb-0 hide-scrollbar">
-                                    {branches.map(b => (
-                                        <button 
-                                            key={b}
-                                            onClick={() => setCurrentBranch(b)}
-                                            className={`px-4 py-2 rounded-t-lg font-medium text-sm flex items-center gap-2 transition-all whitespace-nowrap ${currentBranch === b ? 'tab-active' : 'tab-inactive'}`}
-                                        >
-                                            <Icon name="store" size={14} /> {b}
-                                            {branches.length > 1 && activeView === 'inventory' && currentBranch === b && (
-                                                <span onClick={(e) => { e.stopPropagation(); handleDeleteBranch(b); }} className="hover:text-red-500 p-1 rounded-full hover:bg-red-50 ml-1">
-                                                    <Icon name="x" size={12} />
-                                                </span>
-                                            )}
-                                        </button>
-                                    ))}
-                                    <button onClick={() => setShowBranchModal(true)} className="px-3 py-2 text-gray-400 hover:text-blue-600 hover:bg-gray-100 rounded-t-lg mb-[2px]">
-                                        <Icon name="plus" size={18} />
-                                    </button>
-                                </div>
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                        <InventoryTable 
+                            items={paginatedItems} 
+                            currentBranch={currentBranch} 
+                            onStockChange={handleStockChange}
+                            onEdit={(p) => { setEditingProduct(p); setProductModalOpen(true); }}
+                            onDelete={handleDeleteProduct}
+                            sortConfig={sortConfig}
+                            requestSort={requestSort}
+                        />
+                        {totalPages > 1 && (
+                            <div className="p-4 border-t border-gray-200 bg-gray-50 flex justify-between items-center">
+                                <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p-1)} className="px-3 py-1 rounded bg-white border disabled:opacity-50 text-sm font-medium hover:bg-gray-100">Anterior</button>
+                                <span className="text-sm text-gray-600">Página {currentPage} de {totalPages}</span>
+                                <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p+1)} className="px-3 py-1 rounded bg-white border disabled:opacity-50 text-sm font-medium hover:bg-gray-100">Siguiente</button>
                             </div>
+                        )}
+                    </div>
+
+                    <ProductModal 
+                        isOpen={productModalOpen} 
+                        onClose={() => { setProductModalOpen(false); setEditingProduct(null); }} 
+                        product={editingProduct} 
+                        branches={branches} 
+                        onSave={handleSaveProduct} 
+                    />
+                </div>
+            );
+        };
+
+        // -------------------- Vista Transferencias --------------------
+        const TransferView = () => {
+            const { state, dispatch } = useContext(AppContext);
+            const { inventory, branches, currentBranch } = state;
+            const [transferQueue, setTransferQueue] = useState([]);
+            const [form, setForm] = useState({ productId: '', toBranch: '', quantity: 1 });
+
+            const availableProducts = useMemo(() => inventory.filter(i => (i.stock[currentBranch] || 0) > 0), [inventory, currentBranch]);
+
+            const addToQueue = (e) => {
+                e.preventDefault();
+                if (currentBranch === form.toBranch) return window.showToast?.('Origen y destino deben ser diferentes', 'error');
+                const product = inventory.find(p => p.id === form.productId);
+                if (!product) return;
+                const available = product.stock[currentBranch] || 0;
+                const pending = transferQueue.filter(t => t.productId === form.productId).reduce((acc, t) => acc + t.quantity, 0);
+                if (available < pending + parseInt(form.quantity)) return window.showToast?.('Stock insuficiente considerando cola', 'error');
+                setTransferQueue([...transferQueue, {
+                    id: Date.now() + Math.random(),
+                    productId: form.productId,
+                    sku: product.sku,
+                    name: product.name,
+                    fromBranch: currentBranch,
+                    toBranch: form.toBranch,
+                    quantity: parseInt(form.quantity)
+                }]);
+                setForm({ ...form, quantity: 1 });
+            };
+
+            const executeTransfers = () => {
+                let newInventory = [...inventory];
+                transferQueue.forEach(t => {
+                    const idx = newInventory.findIndex(p => p.id === t.productId);
+                    if (idx >= 0) {
+                        const prod = newInventory[idx];
+                        const fromStock = prod.stock[t.fromBranch] || 0;
+                        const toStock = prod.stock[t.toBranch] || 0;
+                        prod.stock[t.fromBranch] = fromStock - t.quantity;
+                        prod.stock[t.toBranch] = toStock + t.quantity;
+                    }
+                });
+                dispatch({ type: 'SET_INVENTORY', payload: newInventory });
+                transferQueue.forEach(t => {
+                    dispatch({ type: 'ADD_HISTORY', payload: {
+                        id: Date.now() + Math.random(),
+                        date: new Date().toLocaleString(),
+                        detail: `Transferidos ${t.quantity} de ${t.sku} desde ${t.fromBranch} a ${t.toBranch}`
+                    }});
+                });
+                setTransferQueue([]);
+                window.showToast?.('Transferencias ejecutadas', 'success');
+            };
+
+            return (
+                <div className="fade-in grid grid-cols-1 lg:grid-cols-3 gap-8">
+                    <div className="lg:col-span-1 space-y-6">
+                        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+                            <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2"><Icon name="package-minus" className="text-blue-600" /> Nuevo Movimiento</h3>
+                            <div className="p-3 bg-blue-50 rounded-lg text-sm text-blue-800 mb-4 border border-blue-100">Origen: <strong>{currentBranch}</strong></div>
+                            <form onSubmit={addToQueue} className="space-y-4">
+                                <div>
+                                    <label className="text-xs font-bold text-gray-500 uppercase">Producto</label>
+                                    <select required className="w-full mt-1 p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" value={form.productId} onChange={e => setForm({...form, productId: e.target.value})}>
+                                        <option value="">Seleccionar...</option>
+                                        {availableProducts.map(p => <option key={p.id} value={p.id}>{p.sku} - {p.name} (disp: {p.stock[currentBranch]})</option>)}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="text-xs font-bold text-gray-500 uppercase">Destino</label>
+                                    <select required className="w-full mt-1 p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" value={form.toBranch} onChange={e => setForm({...form, toBranch: e.target.value})}>
+                                        <option value="">Seleccionar sucursal...</option>
+                                        {branches.filter(b => b !== currentBranch).map(b => <option key={b} value={b}>{b}</option>)}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="text-xs font-bold text-gray-500 uppercase">Cantidad</label>
+                                    <input type="number" min="1" required className="w-full mt-1 p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" value={form.quantity} onChange={e => setForm({...form, quantity: e.target.value})} />
+                                </div>
+                                <button className="w-full bg-slate-900 text-white py-3 rounded-lg font-bold hover:bg-slate-800 transition shadow-lg">Agregar a Cola</button>
+                            </form>
                         </div>
+                    </div>
 
-                        {/* Content Body */}
-                        <div className="flex-1 overflow-y-auto p-8">
-                            
-                            {/* --- VISTA INVENTARIO --- */}
-                            {activeView === 'inventory' && (
-                                <div className="fade-in space-y-6">
-                                    {/* Toolbar */}
-                                    <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex justify-between items-center flex-wrap gap-4">
-                                        <div className="flex items-center gap-4 flex-1">
-                                            <div className="relative flex-1 max-w-md">
-                                                <Icon name="search" className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-                                                <input 
-                                                    type="text" 
-                                                    placeholder="Buscar SKU, Nombre..." 
-                                                    className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                                                    value={searchTerm}
-                                                    onChange={(e) => setSearchTerm(e.target.value)}
-                                                />
-                                            </div>
-                                            <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer select-none">
-                                                <input 
-                                                    type="checkbox" 
-                                                    checked={showAllProducts} 
-                                                    onChange={(e) => setShowAllProducts(e.target.checked)} 
-                                                    className="rounded text-blue-600 focus:ring-blue-500"
-                                                />
-                                                Ver catálogo global
-                                            </label>
-                                        </div>
-                                        
-                                        <div className="flex gap-3">
-                                            <button className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg font-medium flex items-center gap-2 transition" onClick={() => {
-                                                 /* Exportación Simple a Excel (usando la librería) */
-                                                 const ws = XLSX.utils.json_to_sheet(filteredItems.map(i => ({
-                                                     SKU: i.sku,
-                                                     Nombre: i.name,
-                                                     Familia: i.family,
-                                                     Distribuidor: i.distributor,
-                                                     Stock_Sucursal: i.stock[currentBranch] || 0,
-                                                     Costo: i.cost,
-                                                     Precio: i.price
-                                                 })));
-                                                 const wb = XLSX.utils.book_new();
-                                                 XLSX.utils.book_append_sheet(wb, ws, "Inventario");
-                                                 XLSX.writeFile(wb, `Inventario_${currentBranch}.xlsx`);
-                                            }}>
-                                                <Icon name="download" size={18} /> Exportar
-                                            </button>
-                                            <label className={`px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium flex items-center gap-2 transition cursor-pointer shadow-sm shadow-blue-200 ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}>
-                                                <Icon name={isLoading ? "loader-2" : "upload"} size={18} className={isLoading ? "animate-spin" : ""} /> 
-                                                <span>{isLoading ? 'Procesando...' : `Cargar Excel a ${currentBranch}`}</span>
-                                                <input 
-                                                    type="file" 
-                                                    ref={fileInputRef} 
-                                                    disabled={isLoading}
-                                                    className="hidden" 
-                                                    accept=".xlsx, .xls, .csv" 
-                                                    onChange={handleFileUpload} 
-                                                />
-                                            </label>
-                                        </div>
+                    <div className="lg:col-span-2 flex flex-col h-full">
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 flex-1 flex flex-col">
+                            <div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-xl">
+                                <h3 className="font-bold text-gray-700">Cola de Salida ({transferQueue.length})</h3>
+                                {transferQueue.length > 0 && (
+                                    <button onClick={executeTransfers} className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-bold rounded-lg shadow flex items-center gap-2">
+                                        <Icon name="check-check" size={16}/> Confirmar y Enviar
+                                    </button>
+                                )}
+                            </div>
+                            <div className="flex-1 overflow-auto p-0">
+                                {transferQueue.length === 0 ? (
+                                    <div className="flex flex-col items-center justify-center h-64 text-gray-300">
+                                        <Icon name="clipboard-list" size={48} className="mb-2"/>
+                                        <p>La cola de envíos está vacía</p>
                                     </div>
-
-                                    {/* Tabla */}
-                                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col min-h-[400px]">
-                                        <div className="overflow-x-auto flex-1">
-                                            <table className="w-full text-left">
-                                                <thead className="bg-gray-50 border-b border-gray-200 text-xs font-bold text-gray-500 uppercase tracking-wider sticky top-0">
-                                                    <tr>
-                                                        <th className="px-6 py-4">Producto</th>
-                                                        <th className="px-6 py-4">Detalles</th>
-                                                        <th className="px-6 py-4 text-center bg-blue-50/50 text-blue-800">Stock en {currentBranch}</th>
-                                                        <th className="px-6 py-4 text-right">Económico</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody className="divide-y divide-gray-100">
-                                                    {paginatedItems.map(item => (
-                                                        <tr key={item.id} className="hover:bg-gray-50 transition-colors">
-                                                            <td className="px-6 py-3">
-                                                                <div className="font-bold text-gray-900">{item.name}</div>
-                                                                <div className="text-xs text-gray-500 font-mono bg-gray-100 inline-block px-1 rounded mt-1">{item.sku}</div>
-                                                            </td>
-                                                            <td className="px-6 py-3 text-sm text-gray-600">
-                                                                <div><span className="text-gray-400">Fam:</span> {item.family}</div>
-                                                                <div><span className="text-gray-400">Dist:</span> {item.distributor}</div>
-                                                            </td>
-                                                            <td className="px-6 py-3 text-center bg-blue-50/20">
-                                                                <input 
-                                                                    type="number" 
-                                                                    className="w-20 text-center border border-gray-200 rounded-lg py-1 focus:ring-2 focus:ring-blue-500 outline-none font-bold text-gray-800"
-                                                                    value={item.stock[currentBranch] || 0}
-                                                                    onChange={(e) => {
-                                                                        const val = parseInt(e.target.value) || 0;
-                                                                        setInventory(prev => prev.map(p => p.id === item.id ? { ...p, stock: { ...p.stock, [currentBranch]: val } } : p));
-                                                                    }}
-                                                                />
-                                                            </td>
-                                                            <td className="px-6 py-3 text-right text-sm">
-                                                                <div className="text-gray-900 font-medium">${item.price}</div>
-                                                                <div className="text-xs text-gray-400">Costo: ${item.cost}</div>
-                                                            </td>
-                                                        </tr>
-                                                    ))}
-                                                    {paginatedItems.length === 0 && (
-                                                        <tr><td colSpan="4" className="text-center py-12 text-gray-400">No hay productos en esta vista</td></tr>
-                                                    )}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                        
-                                        {/* Pagination Controls */}
-                                        {totalPages > 1 && (
-                                            <div className="p-4 border-t border-gray-200 bg-gray-50 flex justify-between items-center">
-                                                <button 
-                                                    disabled={currentPage === 1}
-                                                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                                                    className="px-3 py-1 rounded bg-white border border-gray-300 disabled:opacity-50 text-sm font-medium hover:bg-gray-100"
-                                                >
-                                                    Anterior
-                                                </button>
-                                                <span className="text-sm text-gray-600">
-                                                    Página {currentPage} de {totalPages}
-                                                </span>
-                                                <button 
-                                                    disabled={currentPage === totalPages}
-                                                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                                                    className="px-3 py-1 rounded bg-white border border-gray-300 disabled:opacity-50 text-sm font-medium hover:bg-gray-100"
-                                                >
-                                                    Siguiente
-                                                </button>
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* --- VISTA TRANSFERENCIAS --- */}
-                            {activeView === 'transfer' && (
-                                <div className="fade-in grid grid-cols-1 lg:grid-cols-3 gap-8">
-                                    <div className="lg:col-span-1 space-y-6">
-                                        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-                                            <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2">
-                                                <Icon name="package-minus" className="text-blue-600" /> Nuevo Movimiento
-                                            </h3>
-                                            <div className="p-3 bg-blue-50 rounded-lg text-sm text-blue-800 mb-4 border border-blue-100">
-                                                Origen: <strong>{currentBranch}</strong>
-                                                <p className="text-xs mt-1 text-blue-600">Cambia la pestaña arriba para cambiar el origen.</p>
-                                            </div>
-                                            <form onSubmit={addToTransferQueue} className="space-y-4">
-                                                <div>
-                                                    <label className="text-xs font-bold text-gray-500 uppercase">Producto</label>
-                                                    <select 
-                                                        required
-                                                        className="w-full mt-1 p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                                                        value={transferForm.productId}
-                                                        onChange={e => setTransferForm({ ...transferForm, productId: e.target.value })}
-                                                    >
-                                                        <option value="">Seleccionar...</option>
-                                                        {inventory
-                                                            .filter(i => (i.stock[currentBranch] || 0) > 0)
-                                                            .map(i => <option key={i.id} value={i.id}>{i.sku} - {i.name}</option>)}
-                                                    </select>
-                                                </div>
-                                                <div>
-                                                    <label className="text-xs font-bold text-gray-500 uppercase">Destino</label>
-                                                    <select 
-                                                        required
-                                                        className="w-full mt-1 p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                                                        value={transferForm.toBranch}
-                                                        onChange={e => setTransferForm({ ...transferForm, toBranch: e.target.value })}
-                                                    >
-                                                        <option value="">Seleccionar sucursal...</option>
-                                                        {branches.filter(b => b !== currentBranch).map(b => <option key={b} value={b}>{b}</option>)}
-                                                    </select>
-                                                </div>
-                                                <div>
-                                                    <label className="text-xs font-bold text-gray-500 uppercase">Cantidad</label>
-                                                    <div className="flex items-center gap-2">
-                                                        <input 
-                                                            type="number" min="1" required
-                                                            className="flex-1 mt-1 p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                                                            value={transferForm.quantity}
-                                                            onChange={e => setTransferForm({ ...transferForm, quantity: e.target.value })}
-                                                        />
-                                                        {transferForm.productId && (
-                                                            <div className="text-xs text-gray-500 mt-1 px-2 bg-gray-100 rounded h-10 flex items-center">
-                                                                Max: {inventory.find(i => i.id == transferForm.productId)?.stock[currentBranch]}
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                </div>
-                                                <button className="w-full bg-slate-900 text-white py-3 rounded-lg font-bold hover:bg-slate-800 transition shadow-lg shadow-slate-200">
-                                                    Agregar a Cola
-                                                </button>
-                                            </form>
-                                        </div>
-                                    </div>
-
-                                    <div className="lg:col-span-2 flex flex-col h-full">
-                                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 flex-1 flex flex-col">
-                                            <div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-xl">
-                                                <h3 className="font-bold text-gray-700">Cola de Salida ({transferQueue.length})</h3>
-                                                {transferQueue.length > 0 && (
-                                                    <button onClick={executeTransfers} className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-bold rounded-lg shadow flex items-center gap-2">
-                                                        <Icon name="check-check" size={16}/> Confirmar y Enviar
-                                                    </button>
-                                                )}
-                                            </div>
-                                            <div className="flex-1 overflow-auto p-0">
-                                                {transferQueue.length === 0 ? (
-                                                    <div className="flex flex-col items-center justify-center h-64 text-gray-300">
-                                                        <Icon name="clipboard-list" size={48} className="mb-2"/>
-                                                        <p>La cola de envíos está vacía</p>
-                                                    </div>
-                                                ) : (
-                                                    <table className="w-full text-sm text-left">
-                                                        <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
-                                                            <tr>
-                                                                <th className="px-4 py-2">Producto</th>
-                                                                <th className="px-4 py-2">Origen</th>
-                                                                <th className="px-4 py-2">Destino</th>
-                                                                <th className="px-4 py-2 text-center">Cant</th>
-                                                                <th className="px-4 py-2"></th>
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody className="divide-y">
-                                                            {transferQueue.map(item => (
-                                                                <tr key={item.id} className="hover:bg-blue-50">
-                                                                    <td className="px-4 py-3 font-medium text-gray-900">{item.sku}</td>
-                                                                    <td className="px-4 py-3 text-red-600 font-medium">{item.fromBranch}</td>
-                                                                    <td className="px-4 py-3 text-green-600 font-medium">{item.toBranch}</td>
-                                                                    <td className="px-4 py-3 text-center font-bold text-lg">{item.quantity}</td>
-                                                                    <td className="px-4 py-3 text-right">
-                                                                        <button onClick={() => setTransferQueue(transferQueue.filter(t => t.id !== item.id))} className="text-gray-400 hover:text-red-500">
-                                                                            <Icon name="trash-2" size={16} />
-                                                                        </button>
-                                                                    </td>
-                                                                </tr>
-                                                            ))}
-                                                        </tbody>
-                                                    </table>
-                                                )}
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* --- VISTA HISTORIAL --- */}
-                            {activeView === 'history' && (
-                                <div className="fade-in bg-white rounded-xl shadow-sm border border-gray-200">
-                                    <table className="w-full text-left">
-                                        <thead className="bg-gray-50 border-b">
-                                            <tr>
-                                                <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Fecha</th>
-                                                <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Descripción</th>
-                                            </tr>
+                                ) : (
+                                    <table className="w-full text-sm text-left">
+                                        <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
+                                            <tr><th>Producto</th><th>Origen</th><th>Destino</th><th className="text-center">Cant</th><th></th></tr>
                                         </thead>
                                         <tbody className="divide-y">
-                                            {history.map(h => (
-                                                <tr key={h.id} className="hover:bg-gray-50">
-                                                    <td className="px-6 py-4 text-sm text-gray-500 w-48">{h.date}</td>
-                                                    <td className="px-6 py-4 text-gray-800">{h.detail}</td>
+                                            {transferQueue.map(item => (
+                                                <tr key={item.id} className="hover:bg-blue-50">
+                                                    <td className="px-4 py-3 font-medium text-gray-900">{item.sku}</td>
+                                                    <td className="px-4 py-3 text-red-600 font-medium">{item.fromBranch}</td>
+                                                    <td className="px-4 py-3 text-green-600 font-medium">{item.toBranch}</td>
+                                                    <td className="px-4 py-3 text-center font-bold text-lg">{item.quantity}</td>
+                                                    <td className="px-4 py-3 text-right">
+                                                        <button onClick={() => setTransferQueue(transferQueue.filter(t => t.id !== item.id))} className="text-gray-400 hover:text-red-500"><Icon name="trash-2" size={16} /></button>
+                                                    </td>
                                                 </tr>
                                             ))}
-                                            {history.length === 0 && <tr><td colSpan="2" className="text-center py-8 text-gray-400">Sin registros</td></tr>}
                                         </tbody>
                                     </table>
-                                </div>
-                            )}
+                                )}
+                            </div>
                         </div>
                     </div>
-
-                    {/* Modales y Toasts */}
-                    <NewBranchModal isOpen={showBranchModal} onClose={() => setShowBranchModal(false)} onConfirm={handleAddBranch} />
-                    {notification && <Toast message={notification.message} type={notification.type} onClose={() => setNotification(null)} />}
                 </div>
+            );
+        };
+
+        // -------------------- Vista Historial --------------------
+        const HistoryView = () => {
+            const { state } = useContext(AppContext);
+            const { history } = state;
+            return (
+                <div className="fade-in bg-white rounded-xl shadow-sm border border-gray-200">
+                    <table className="w-full text-left">
+                        <thead className="bg-gray-50 border-b"><tr><th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Fecha</th><th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Descripción</th></tr></thead>
+                        <tbody className="divide-y">
+                            {history.map(h => <tr key={h.id} className="hover:bg-gray-50"><td className="px-6 py-4 text-sm text-gray-500 w-48">{h.date}</td><td className="px-6 py-4 text-gray-800">{h.detail}</td></tr>)}
+                            {history.length === 0 && <tr><td colSpan="2" className="text-center py-8 text-gray-400">Sin registros</td></tr>}
+                        </tbody>
+                    </table>
+                </div>
+            );
+        };
+
+        // -------------------- App Principal --------------------
+        const App = () => {
+            const [inventory, setInventory] = useLocalStorage('sm_inventory', []);
+            const [branches, setBranches] = useLocalStorage('sm_branches', ['Casa Central']);
+            const [history, setHistory] = useLocalStorage('sm_history', []);
+            const [currentBranch, setCurrentBranch] = useState('Casa Central');
+            const [activeView, setActiveView] = useState('inventory');
+            const [showBranchModal, setShowBranchModal] = useState(false);
+            const [notification, setNotification] = useState(null);
+
+            // Reducer combinado
+            const [state, dispatch] = useReducer(appReducer, { inventory, branches, history });
+
+            // Sincronizar con localStorage cuando cambie el estado
+            useEffect(() => { setInventory(state.inventory); }, [state.inventory, setInventory]);
+            useEffect(() => { setBranches(state.branches); }, [state.branches, setBranches]);
+            useEffect(() => { setHistory(state.history); }, [state.history, setHistory]);
+
+            // Asegurar currentBranch válido
+            useEffect(() => {
+                if (!state.branches.includes(currentBranch)) {
+                    setCurrentBranch(state.branches[0] || 'Casa Central');
+                }
+            }, [state.branches, currentBranch]);
+
+            // Sistema de notificaciones global
+            window.showToast = (msg, type = 'success') => setNotification({ message: msg, type });
+
+            const handleAddBranch = (name) => {
+                if (state.branches.includes(name)) return window.showToast?.('La sucursal ya existe', 'error');
+                dispatch({ type: 'ADD_BRANCH', payload: name });
+                setCurrentBranch(name);
+                setShowBranchModal(false);
+                window.showToast?.('Sucursal creada', 'success');
+            };
+
+            const handleDeleteBranch = (name) => {
+                if (state.branches.length <= 1) return window.showToast?.('Debe haber al menos una sucursal', 'error');
+                if (!confirm(`¿Eliminar "${name}"? Se perderá el stock asociado.`)) return;
+                dispatch({ type: 'DELETE_BRANCH', payload: name });
+                if (currentBranch === name) setCurrentBranch(state.branches.find(b => b !== name));
+                window.showToast?.('Sucursal eliminada', 'success');
+            };
+
+            return (
+                <AppContext.Provider value={{ state: { ...state, currentBranch }, dispatch }}>
+                    <div className="flex h-screen overflow-hidden bg-gray-50">
+                        <Sidebar activeView={activeView} setActiveView={setActiveView} currentBranch={currentBranch} />
+                        <div className="flex-1 flex flex-col overflow-hidden">
+                            <div className="bg-white border-b border-gray-200 px-8 pt-6">
+                                <div className="flex justify-between items-end">
+                                    <div>
+                                        <h1 className="text-2xl font-bold text-gray-800 mb-1">
+                                            {activeView === 'inventory' && 'Gestión de Inventario'}
+                                            {activeView === 'transfer' && 'Centro de Transferencias'}
+                                            {activeView === 'history' && 'Auditoría de Movimientos'}
+                                        </h1>
+                                        <p className="text-sm text-gray-500 mb-6">Total Productos: {state.inventory.length}</p>
+                                    </div>
+                                    <BranchTabs 
+                                        branches={state.branches} 
+                                        currentBranch={currentBranch} 
+                                        setCurrentBranch={setCurrentBranch} 
+                                        onAdd={() => setShowBranchModal(true)} 
+                                        onDelete={handleDeleteBranch} 
+                                    />
+                                </div>
+                            </div>
+                            <div className="flex-1 overflow-y-auto p-8">
+                                {activeView === 'inventory' && <InventoryView />}
+                                {activeView === 'transfer' && <TransferView />}
+                                {activeView === 'history' && <HistoryView />}
+                            </div>
+                        </div>
+                    </div>
+                    <BranchModal isOpen={showBranchModal} onClose={() => setShowBranchModal(false)} onConfirm={handleAddBranch} />
+                    {notification && <Toast {...notification} onClose={() => setNotification(null)} />}
+                </AppContext.Provider>
             );
         };
 
